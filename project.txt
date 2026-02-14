@@ -1,0 +1,259 @@
+#version 330 core
+
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aOffset;
+layout(location = 2) in vec3 aColor;
+layout(location = 3) in float aVisited;
+
+out vec3 vColor;
+out vec2 vRotatedPos;
+out float vVisited;
+
+uniform float scale;
+uniform vec2 screenSize;
+uniform vec2 playerPos;
+uniform vec2 mapCenter;
+
+uniform vec2 rotRow0;
+uniform vec2 rotRow1;
+
+void main()
+{
+    vec2 rel = aOffset - playerPos;
+
+    // Apply rotation (no flipping)
+    vec2 rotatedTile = vec2(
+        dot(rel, rotRow0),
+        dot(rel, rotRow1)
+    );
+
+    vRotatedPos = rotatedTile;
+    vVisited = aVisited;
+
+    vec2 rotatedCorner = vec2(
+        dot(aPos * scale, rotRow0),
+        dot(aPos * scale, rotRow1)
+    );
+
+    vec2 pixel = mapCenter + rotatedTile * scale + rotatedCorner;
+
+    vec2 ndc = (pixel / screenSize) * 2.0 - 1.0;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+
+    vColor = aColor;
+}
+#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aUV;
+
+out vec2 uv;
+
+void main()
+{
+    uv = aUV;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+#version 330 core
+
+layout(location = 0) in vec2 aPos;  // local-space position
+
+uniform vec2 screenSize;   // window size in pixels
+uniform vec2 offset;       // pixel offset for this draw
+uniform vec2 rotRow0;      // rotation matrix row 0 (for arrow)
+uniform vec2 rotRow1;      // rotation matrix row 1 (for arrow)
+uniform float arrowScale;  // scale for local units (1 for border, tile size for arrow)
+
+void main()
+{
+    // Local -> scaled
+    vec2 scaled = aPos * arrowScale;
+
+    // Apply rotation (identity for border)
+    vec2 rotated = vec2(
+        dot(scaled, rotRow0),
+        dot(scaled, rotRow1)
+    );
+
+    // To pixel space
+    vec2 pixel = offset + rotated;
+
+    // To NDC
+    vec2 ndc = (pixel / screenSize) * 2.0 - 1.0;
+
+    gl_Position = vec4(ndc, 0.0, 1.0);
+}
+#version 330 core
+
+in vec3 vColor;
+in vec2 vRotatedPos;
+in float vVisited;
+
+out vec4 FragColor;
+
+uniform float fogStart;
+uniform float fogEnd;
+uniform vec3 fogColor;
+
+void main()
+{
+    // If the tile has been visited at least once, show its real color
+    if (vVisited > 0.5)
+    {
+        FragColor = vec4(vColor, 1.0);
+        return;
+    }
+
+    // Tile has NOT been visited — show pure fog color (no blending)
+    FragColor = vec4(fogColor, 1.0);
+}
+#version 330 core
+
+in vec2 uv;
+out vec4 FragColor;
+
+uniform vec2  pPos;
+uniform float pAng;
+uniform vec2  mSize;
+uniform sampler2D mTex;
+uniform sampler2D wallTex;
+
+uniform vec3 fogColor;
+uniform float fogStart;
+uniform float fogEnd;
+
+void main()
+{
+    // Build ray direction
+    vec2 dir   = vec2(cos(pAng), sin(pAng));
+    vec2 plane = vec2(-sin(pAng), cos(pAng)) * 0.66;
+
+    float cameraX = uv.x;
+    vec2 rayDir = dir + plane * cameraX;
+
+    // Avoid divide-by-zero
+    if (abs(rayDir.x) < 1e-6) rayDir.x = (rayDir.x < 0.0 ? -1e-6 : 1e-6);
+    if (abs(rayDir.y) < 1e-6) rayDir.y = (rayDir.y < 0.0 ? -1e-6 : 1e-6);
+
+    // DDA setup
+    int mapX = int(floor(pPos.x));
+    int mapY = int(floor(pPos.y));
+
+    vec2 deltaDist = vec2(abs(1.0 / rayDir.x), abs(1.0 / rayDir.y));
+    vec2 sideDist;
+    ivec2 step;
+    int side = 0;
+
+    if (rayDir.x < 0.0)
+    {
+        step.x = -1;
+        sideDist.x = (pPos.x - float(mapX)) * deltaDist.x;
+    }
+    else
+    {
+        step.x = 1;
+        sideDist.x = (float(mapX + 1) - pPos.x) * deltaDist.x;
+    }
+
+    if (rayDir.y < 0.0)
+    {
+        step.y = -1;
+        sideDist.y = (pPos.y - float(mapY)) * deltaDist.y;
+    }
+    else
+    {
+        step.y = 1;
+        sideDist.y = (float(mapY + 1) - pPos.y) * deltaDist.y;
+    }
+
+    bool hit = false;
+    float perpWallDist = 0.0;
+
+    // DDA loop
+    for (int i = 0; i < 256; i++)
+    {
+        if (sideDist.x < sideDist.y)
+        {
+            sideDist.x += deltaDist.x;
+            mapX += step.x;
+            side = 0;
+        }
+        else
+        {
+            sideDist.y += deltaDist.y;
+            mapY += step.y;
+            side = 1;
+        }
+
+        if (mapX < 0 || mapX >= int(mSize.x) || mapY < 0 || mapY >= int(mSize.y))
+            break;
+
+        float cell = texture(mTex, (vec2(mapX, mapY) + 0.5) / mSize).r;
+        if (cell > 0.5)
+        {
+            hit = true;
+            perpWallDist = (side == 0 ? sideDist.x - deltaDist.x : sideDist.y - deltaDist.y);
+            break;
+        }
+    }
+
+    // If no hit, draw sky/fog
+    if (!hit)
+    {
+        FragColor = vec4(fogColor, 1.0);
+        return;
+    }
+
+    // Compute wall height in NDC
+    float lineHeight = 1.0 / perpWallDist;
+
+    // Compute top/bottom of wall slice in NDC space
+    float wallTop    = -lineHeight;
+    float wallBottom =  lineHeight;
+
+    // Ceiling
+    if (uv.y > wallBottom)
+    {
+        FragColor = vec4(0.10, 0.10, 0.15, 1.0);
+        return;
+    }
+
+    // Floor
+    if (uv.y < wallTop)
+    {
+        FragColor = vec4(0.20, 0.20, 0.20, 1.0);
+        return;
+    }
+
+    // Wall texture coordinate
+    float wallX;
+    if (side == 0)
+        wallX = pPos.y + perpWallDist * rayDir.y;
+    else
+        wallX = pPos.x + perpWallDist * rayDir.x;
+    wallX -= floor(wallX);
+
+    float texY = (uv.y - wallTop) / (wallBottom - wallTop);
+    vec2 texCoord = vec2(wallX, texY);
+
+    vec4 texColor = texture(wallTex, texCoord);
+
+    // Side shading
+    float shade = (side == 1) ? 0.7 : 1.0;
+    vec3 litColor = texColor.rgb * shade;
+
+    // Fog
+    float fogFactor = clamp((fogEnd - perpWallDist) / (fogEnd - fogStart), 0.0, 1.0);
+    vec3 finalColor = mix(fogColor, litColor, fogFactor);
+
+    FragColor = vec4(finalColor, 1.0);
+}
+#version 330 core
+
+out vec4 FragColor;
+
+uniform vec3 color;
+
+void main()
+{
+    FragColor = vec4(color, 1.0);
+}
