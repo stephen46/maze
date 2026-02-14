@@ -1,0 +1,85 @@
+#version 330 core
+
+layout (location = 0) in vec2 aPos;
+
+uniform vec2 mapCenter;     // minimap center in screen pixels
+uniform float scale;        // minimap scale factor
+uniform float angle;        // player angle
+uniform vec2 screenSize;    // actual window size
+
+void main()
+{
+    // aPos is in MINIMAP-LOCAL units (0 = center)
+    // Rotate arrow around its center
+    float c = cos(angle);
+    float s = sin(angle);
+
+    vec2 rotated = vec2(
+        aPos.x * c - aPos.y * s,
+        aPos.x * s + aPos.y * c
+    );
+
+    // Scale arrow relative to minimap tile size
+    vec2 scaled = rotated * scale;
+
+    // Move arrow to minimap center
+    vec2 finalPos = mapCenter + scaled;
+
+    // Convert to clip space
+    vec2 clip = (finalPos / screenSize) * 2.0 - 1.0;
+    clip.y = -clip.y;
+
+    gl_Position = vec4(clip, 0.0, 1.0);
+}
+#version 330 core
+
+out vec4 FragColor;
+
+void main()
+{
+    FragColor = vec4(1.0, 1.0, 0.0, 1.0);
+}
+#version 330 core
+
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aOffset;
+layout(location = 2) in vec3 aColor;
+layout(location = 3) in float aVisited;
+
+out vec3 vColor;
+out vec2 vRotatedPos;
+out float vVisited;
+
+uniform float scale;
+uniform vec2 screenSize;
+uniform vec2 playerPos;
+uniform vec2 mapCenter;
+
+uniform vec2 rotRow0;
+uniform vec2 rotRow1;
+
+void main()
+{
+    vec2 rel = aOffset - playerPos;
+    rel.x = -rel.x;
+
+    vec2 rotatedTile = vec2(
+        dot(rel, rotRow0),
+        dot(rel, rotRow1)
+    );
+
+    vRotatedPos = rotatedTile;
+    vVisited = aVisited;
+
+    vec2 rotatedCorner = vec2(
+        dot(aPos * scale, rotRow0),
+        dot(aPos * scale, rotRow1)
+    );
+
+    vec2 pixel = mapCenter + rotatedTile * scale + rotatedCorner;
+
+    vec2 ndc = (pixel / screenSize) * 2.0 - 1.0;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+
+    vColor = aColor;
+}
